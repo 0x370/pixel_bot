@@ -1,0 +1,25 @@
+{
+  "active_profile": "csgo",
+  "capture_backend": "x11",
+  "input_backend": "uinput",
+  "profiles": {
+    "csgo": {
+      "capture": { "region_x": 0, "region_y": 0, "region_w": 1920, "region_h": 1080 },
+      "detection": {
+        "technique": "composite",
+        "color_ranges": [
+          { "h": [0, 10],    "s": [100, 255], "v": [100, 255] },
+          { "h": [170, 180], "s": [100, 255], "v": [100, 255] }
+        ],
+        "fov_radius": 250,
+        "min_area": 12,
+        "head_offset": 3,
+        "hysteresis_distance": 30,
+        "hysteresis_factor": 0.8,
+        "edge_threshold": 90,
+        "edge_min_aspect": 0.8
+      },
+      "aim": { "x_sensitivity": 0.18, "y_sensitivity": 0.18, "smoothing": 0.25 }
+    }
+  }
+}
