@@ -1,17 +1,18 @@
-// src/capture/x11_capture.cpp — Xlib + MIT-SHM synchronous capture.
+// src/capture/x11_capture.cpp — Xlib + MIT-SHM capture with window tracking.
 //
-// Reads the configured sub-rectangle of the root window directly into a
-// shared-memory segment via XShmGetImage. The Frame returned by capture()
-// aliases the SHM buffer (zero-copy); the consumer must finish reading before
-// the next capture() call (single-buffer latest-frame contract). stride is
-// read from img->bytes_per_line, never assumed == width*4 (X11 may pad).
+// Always allocates a full-screen SHM buffer (so window resize/move never needs
+// reallocation). capture() grabs the entire root window via XShmGetImage, then
+// returns a Frame sub-view offset to the target window's current geometry (or
+// the manual region if no window is set). The detector/aim code already uses
+// stride correctly, so a sub-view with full-screen stride works seamlessly.
 #include "x11_capture.hpp"
-#include <X11/Xutil.h>
 #include "error.hpp"
+#include <X11/Xutil.h>
 #include <cstddef>
 #include <span>
 #include <sys/ipc.h>
 #include <cstring>
+#include <print>
 
 namespace pixelbot {
 
@@ -29,9 +30,14 @@ X11Capture::X11Capture(const CaptureConfig& cfg) : cfg_(cfg) {
         if (depth < 24)
             throw FatalError{"x11: root depth < 24 (only 24/32-bit TrueColor supported)"};
 
-        // Allocate the SHM segment for one BGRA8 frame of the capture region.
-        const std::size_t bytes = static_cast<std::size_t>(cfg_.region_w) *
-                                  static_cast<std::size_t>(cfg_.region_h) * 4u;
+        // Full-screen dimensions — the SHM buffer always covers the entire root
+        // so any window sub-region fits without reallocation.
+        screen_w_ = DisplayWidth(dpy_, screen);
+        screen_h_ = DisplayHeight(dpy_, screen);
+
+        // Allocate SHM for one full-screen BGRA8 frame.
+        const std::size_t bytes = static_cast<std::size_t>(screen_w_) *
+                                  static_cast<std::size_t>(screen_h_) * 4u;
         shmid_ = shmget(IPC_PRIVATE, static_cast<std::size_t>(bytes), IPC_CREAT | 0777);
         if (shmid_ == -1)
             throw FatalError{"x11: shmget failed"};
@@ -47,50 +53,117 @@ X11Capture::X11Capture(const CaptureConfig& cfg) : cfg_(cfg) {
             throw FatalError{"x11: XShmAttach failed"};
         attached_ = true;
 
-        // XShmCreateImage adopts `shmaddr_` as its data buffer. On a typical
-        // 24/32-bit TrueColor X server the ZPixmap layout is B,G,R,X in memory
-        // (little-endian), which we treat as BGRA8 (alpha = padding byte).
+        // XShmCreateImage adopts `shmaddr_` as its data buffer. ZPixmap layout
+        // is B,G,R,X in memory (little-endian) on a typical 24/32-bit X server;
+        // we treat it as BGRA8 (alpha = padding byte).
         img_ = XShmCreateImage(dpy_, DefaultVisual(dpy_, screen), depth,
                                ZPixmap, shmaddr_, &shminfo_,
-                               static_cast<unsigned int>(cfg_.region_w),
-                               static_cast<unsigned int>(cfg_.region_h));
+                               static_cast<unsigned int>(screen_w_),
+                               static_cast<unsigned int>(screen_h_));
         if (!img_)
             throw FatalError{"x11: XShmCreateImage failed"};
         if (img_->bits_per_pixel != 32)
             throw FatalError{"x11: expected 32 bits/pixel ZPixmap, got " +
                              std::to_string(img_->bits_per_pixel)};
+
+        // Seed current dimensions from the initial config.
+        target_win_ = cfg_.window_id;
+        cur_w_ = cfg_.region_w;
+        cur_h_ = cfg_.region_h;
+        if (target_win_ != 0) {
+            int x, y, w, h;
+            if (query_window_geom(x, y, w, h)) { cur_w_ = w; cur_h_ = h; }
+        }
     } catch (...) {
-        // A throwing ctor never reaches ~X11Capture; release partial work.
         cleanup();
         throw;
     }
 }
 
+bool X11Capture::query_window_geom(int& x, int& y, int& w, int& h) const noexcept {
+    XWindowAttributes attr;
+    if (XGetWindowAttributes(dpy_, static_cast<Window>(target_win_), &attr) == 0)
+        return false;
+    Window child;
+    if (XTranslateCoordinates(dpy_, static_cast<Window>(target_win_),
+                              DefaultRootWindow(dpy_), 0, 0, &x, &y, &child) == 0)
+        return false;
+    w = attr.width;
+    h = attr.height;
+    // Clamp to screen bounds so the sub-view doesn't read past the SHM buffer.
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > screen_w_) w = screen_w_ - x;
+    if (y + h > screen_h_) h = screen_h_ - y;
+    return w > 0 && h > 0;
+}
+
 Frame X11Capture::capture() {
-    if (!XShmGetImage(dpy_, DefaultRootWindow(dpy_), img_,
-                      cfg_.region_x, cfg_.region_y, AllPlanes))
+    // Window-targeted: capture the window drawable directly via XGetImage.
+    // This is required for Vulkan games under Xwayland — the root window is
+    // black because the compositor doesn't composite Vulkan surfaces into it.
+    // XGetImage on the window itself returns the rendered content.
+    if (target_win_ != 0) {
+        int wx, wy, ww, wh;
+        if (query_window_geom(wx, wy, ww, wh)) {
+            // Free the previous frame's XImage (the pipeline has already
+            // copied it into a FrameSnap by now).
+            if (win_img_) { win_img_->data = nullptr; win_img_->f.destroy_image(win_img_); win_img_ = nullptr; }
+            win_img_ = XGetImage(dpy_, static_cast<Window>(target_win_),
+                                 0, 0, static_cast<unsigned int>(ww),
+                                 static_cast<unsigned int>(wh),
+                                 AllPlanes, ZPixmap);
+            if (!win_img_)
+                throw FatalError{"x11: XGetImage on target window failed"};
+            cur_w_ = win_img_->width;
+            cur_h_ = win_img_->height;
+            return Frame{
+                .data = std::span<std::byte>{
+                    reinterpret_cast<std::byte*>(win_img_->data),
+                    static_cast<std::size_t>(win_img_->bytes_per_line) * win_img_->height},
+                .width = win_img_->width,
+                .height = win_img_->height,
+                .stride = win_img_->bytes_per_line,
+                .format = PixelFormat::BGRA8,
+            };
+        }
+        // Window gone — fall through to root capture.
+    }
+
+    // Manual region: capture the full root window into the SHM buffer.
+    if (!XShmGetImage(dpy_, DefaultRootWindow(dpy_), img_, 0, 0, AllPlanes))
         throw FatalError{"x11: XShmGetImage failed"};
+    cur_w_ = screen_w_;
+    cur_h_ = screen_h_;
     return Frame{
         .data = std::span<std::byte>{reinterpret_cast<std::byte*>(shmaddr_),
-            static_cast<std::size_t>(img_->bytes_per_line) * img_->height},
-        .width = img_->width,
-        .height = img_->height,
+            static_cast<std::size_t>(img_->bytes_per_line) * screen_h_},
+        .width = screen_w_,
+        .height = screen_h_,
         .stride = img_->bytes_per_line,
         .format = PixelFormat::BGRA8,
     };
 }
 
+int X11Capture::width() const noexcept {
+    if (target_win_ != 0) return cur_w_ > 0 ? cur_w_ : cfg_.region_w;
+    return cfg_.region_w > 0 ? cfg_.region_w : screen_w_;
+}
+
+int X11Capture::height() const noexcept {
+    if (target_win_ != 0) return cur_h_ > 0 ? cur_h_ : cfg_.region_h;
+    return cfg_.region_h > 0 ? cfg_.region_h : screen_h_;
+}
+
 X11Capture::~X11Capture() { cleanup(); }
 
 void X11Capture::cleanup() noexcept {
-    // XDestroyImage's default impl calls Xfree(image->data). For an SHM-backed
-    // image img_->data == shmaddr_; nulling it first makes the free a no-op,
-    // so we own the segment and unmap it via shmdt ourselves — no double-free.
     if (img_) {
         img_->data = nullptr;
         XDestroyImage(img_);
         img_ = nullptr;
     }
+    if (win_img_) { win_img_->data = nullptr; win_img_->f.destroy_image(win_img_); win_img_ = nullptr; }
     if (attached_ && dpy_) { XShmDetach(dpy_, &shminfo_); attached_ = false; }
     if (shmaddr_ && shmaddr_ != reinterpret_cast<char*>(-1)) { shmdt(shmaddr_); shmaddr_ = nullptr; }
     if (shmid_ != -1) { shmctl(shmid_, IPC_RMID, nullptr); shmid_ = -1; }

@@ -40,6 +40,7 @@ struct AimConfig {
 
 struct CaptureConfig {
     int region_x = 0, region_y = 0, region_w = 0, region_h = 0;
+    unsigned long window_id = 0;  // 0 = use region_x/y/w/h; >0 = track this X window
 };
 
 // Per-profile keybind for enabling aiming. `aim_key` is an X11 keysym name

@@ -55,7 +55,16 @@ void Pipeline::stop() {
 }
 
 void Pipeline::capture_loop(std::stop_token st) {
+    unsigned long last_win = 0;
     while (!st.stop_requested()) {
+        // Check if the GUI changed the target window (published via config).
+        if (auto cfg = ConfigStore::instance().snapshot()) {
+            unsigned long w = cfg->active().capture.window_id;
+            if (w != last_win) {
+                capture_->set_target_window(w);
+                last_win = w;
+            }
+        }
         Frame f = capture_->capture();
         auto snap = std::make_shared<FrameSnap>();
         snap->width  = f.width;

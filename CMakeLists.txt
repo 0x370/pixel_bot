@@ -83,6 +83,7 @@ add_executable(pixelbot
     src/config.cpp
     src/capture/x11_capture.cpp
     src/vision/primitives.cpp
+    src/capture/window_finder.cpp
     src/vision/color_detector.cpp
     src/vision/edge_detector.cpp
     src/vision/composite_detector.cpp

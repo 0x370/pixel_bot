@@ -64,13 +64,15 @@ static std::string scancode_to_keysym_name(SDL_Scancode sc) {
 struct Gui::Impl {
     SDL_Window*   window   = nullptr;
     SDL_Renderer* renderer = nullptr;
-    // The mutable working copy of the config; published on change.
     Config cfg;
     bool cfg_loaded = false;
-    // Keybind capture state.
     bool capturing_key = false;
-    // Track whether any control changed this frame → publish.
     bool dirty = false;
+    // Window enumeration for the target dropdown.
+    WindowFinder wf;
+    std::vector<WindowInfo> windows;
+    int selected_win = -1;        // index into windows; -1 = none
+    int refresh_counter = 0;      // re-enumerate every ~60 frames
 };
 
 Gui::Gui() : impl_(std::make_unique<Impl>()) {
@@ -183,11 +185,66 @@ void Gui::render() {
         ImGui::TextDisabled("Keys: F1-F12, space, Shift, Ctrl, Alt, Caps_Lock.\nButtons: Mouse1..Mouse5 (set via config).");
     }
 
-    if (ImGui::CollapsingHeader("Capture")) {
-        if (ImGui::SliderInt("region_x", &p.capture.region_x, 0, 3840)) impl_->dirty = true;
-        if (ImGui::SliderInt("region_y", &p.capture.region_y, 0, 2160)) impl_->dirty = true;
-        if (ImGui::SliderInt("region_w", &p.capture.region_w, 64, 3840)) impl_->dirty = true;
-        if (ImGui::SliderInt("region_h", &p.capture.region_h, 64, 2160)) impl_->dirty = true;
+    if (ImGui::CollapsingHeader("Capture", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Re-enumerate windows every ~60 frames (~1s at 60fps) or on demand.
+        if (++impl_->refresh_counter >= 60 || impl_->windows.empty()) {
+            impl_->windows = impl_->wf.enumerate();
+            impl_->refresh_counter = 0;
+            // Re-sync selected index to the current window_id.
+            impl_->selected_win = -1;
+            for (int i = 0; i < static_cast<int>(impl_->windows.size()); ++i) {
+                if (impl_->windows[i].id == p.capture.window_id) {
+                    impl_->selected_win = i;
+                    break;
+                }
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Refresh##wins")) {
+            impl_->windows = impl_->wf.enumerate();
+            impl_->refresh_counter = 0;
+        }
+
+        // Build the dropdown items from the window list.
+        std::vector<std::string> labels;
+        labels.reserve(impl_->windows.size());
+        for (const auto& w : impl_->windows)
+            labels.push_back(w.title + "  [" + std::to_string(w.w) + "x" +
+                              std::to_string(w.h) + "]");
+        // ImGui Combo needs a single contiguous C-string with \0 separators.
+        std::string combo_buf;
+        for (const auto& l : labels) { combo_buf += l; combo_buf += '\0'; }
+        combo_buf += '\0';  // terminator
+        int sel = impl_->selected_win;
+        if (ImGui::Combo("Target window", &sel, combo_buf.data(),
+                         static_cast<int>(labels.size()))) {
+            if (sel >= 0 && sel < static_cast<int>(impl_->windows.size())) {
+                impl_->selected_win = sel;
+                p.capture.window_id = impl_->windows[sel].id;
+                // Update the region from the window's geometry.
+                p.capture.region_x = impl_->windows[sel].x;
+                p.capture.region_y = impl_->windows[sel].y;
+                p.capture.region_w = impl_->windows[sel].w;
+                p.capture.region_h = impl_->windows[sel].h;
+                impl_->dirty = true;
+            }
+        }
+        if (p.capture.window_id != 0) {
+            ImGui::TextDisabled("Tracking window 0x%lx: %dx%d+%d+%d",
+                p.capture.window_id, p.capture.region_w, p.capture.region_h,
+                p.capture.region_x, p.capture.region_y);
+            if (ImGui::Button("Stop tracking##stopwin")) {
+                p.capture.window_id = 0;
+                impl_->selected_win = -1;
+                impl_->dirty = true;
+            }
+        } else {
+            // Manual region sliders when no window is tracked.
+            if (ImGui::SliderInt("region_x", &p.capture.region_x, 0, 3840)) impl_->dirty = true;
+            if (ImGui::SliderInt("region_y", &p.capture.region_y, 0, 2160)) impl_->dirty = true;
+            if (ImGui::SliderInt("region_w", &p.capture.region_w, 64, 3840)) impl_->dirty = true;
+            if (ImGui::SliderInt("region_h", &p.capture.region_h, 64, 2160)) impl_->dirty = true;
+        }
     }
 
     if (ImGui::Button("Reload from file")) {

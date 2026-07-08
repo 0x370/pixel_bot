@@ -9,6 +9,7 @@
 #pragma once
 #include "config.hpp"
 #include "input/keybind_poller.hpp"
+#include "capture/window_finder.hpp"
 #include <atomic>
 #include <memory>
 
