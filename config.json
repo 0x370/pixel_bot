@@ -19,7 +19,8 @@
         "edge_threshold": 90,
         "edge_min_aspect": 0.8
       },
-      "aim": { "x_sensitivity": 0.18, "y_sensitivity": 0.18, "smoothing": 0.25 }
+      "aim": { "x_sensitivity": 0.18, "y_sensitivity": 0.18, "smoothing": 0.25 },
+      "keybind": { "aim_key": "Mouse5", "aim_mode": "hold" }
     }
   }
 }

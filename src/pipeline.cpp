@@ -30,6 +30,18 @@ Pipeline::~Pipeline() { stop(); }
 
 void Pipeline::start() {
     capture_->start();
+    // Build the keybind poller from the current config (opens its own X
+    // display for polling). If it can't open the display (e.g. no X), aim
+    // stays disabled — not fatal, since --once / headless runs don't need it.
+    if (auto cfg = ConfigStore::instance().snapshot()) {
+        try {
+            keybind_ = std::make_unique<KeybindPoller>(cfg->active().keybind);
+            last_keybind_ = cfg->active().keybind;
+        } catch (const FatalError& e) {
+            std::println(stderr, "pixelbot: {}", e.what());
+            std::println(stderr, "  (aim will be disabled — no keybind polling)");
+        }
+    }
     capture_thread_ = std::jthread([this](std::stop_token st) { capture_loop(st); });
     aim_thread_     = std::jthread([this](std::stop_token st) { aim_loop(st); });
 }
@@ -93,10 +105,24 @@ void Pipeline::aim_loop(std::stop_token st) {
 
         Delta d = aim.compute(t, prof.aim);
 
+        // Reconfigure the keybind poller if the keybind changed (GUI publish).
+        if (keybind_) {
+            const auto& new_kb = prof.keybind;
+            if (new_kb.aim_key != last_keybind_.aim_key ||
+                new_kb.aim_mode != last_keybind_.aim_mode) {
+                keybind_->reconfigure(new_kb);
+                last_keybind_ = new_kb;
+            }
+        }
+
+        // Gate mouse movement on the aim keybind (hold/toggle). In dry-run we
+        // log regardless so the user can see detection working.
+        const bool aim_on = keybind_ ? keybind_->aim_enabled() : true;
+
         if (dry_run_) {
-            std::println(stderr, "target={{{}, {}}} delta={{{:.1f}, {:.1f}}}",
-                         t.x, t.y, d.dx, d.dy);
-        } else if (mouse_) {
+            std::println(stderr, "target={{{}, {}}} delta={{{:.1f}, {:.1f}}} aim={}",
+                         t.x, t.y, d.dx, d.dy, aim_on ? "ON" : "off");
+        } else if (mouse_ && aim_on) {
             mouse_->move(static_cast<int>(std::lround(d.dx)),
                          static_cast<int>(std::lround(d.dy)));
         }

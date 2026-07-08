@@ -40,10 +40,42 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(nlohmann_json)
 
-# --- X11 (Xlib + MIT-SHM via xext) --------------------------------------------
+# --- SDL2 (for the GUI window) ------------------------------------------------
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 xext)
 
+pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+
+# --- Dear ImGui (v1.92.8, static lib) ----------------------------------------
+# Fetched as source; we build the core + the SDL2/SDL_Renderer backend into a
+# static lib. The SDL_Renderer backend avoids any GL-context/EGL fragility
+# under Xwayland (SDL2 can pick a software renderer if needed).
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.92.8
+    GIT_SHALLOW TRUE)
+FetchContent_GetProperties(imgui)
+if(NOT imgui_POPULATED)
+    FetchContent_Populate(imgui)
+endif()
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer2.cpp)
+target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui PUBLIC PkgConfig::SDL2)
+# ImGui's C++ uses C-style casts and old patterns; silence its warnings.
+target_compile_options(imgui PRIVATE -Wno-zero-as-null-pointer-constant
+    -Wno-old-style-cast -Wno-unused-variable -Wno-sign-conversion)
+
+# --- X11 (Xlib + MIT-SHM via xext) --------------------------------------------
+pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 xext)
 enable_testing()
 
 add_executable(pixelbot
@@ -57,15 +89,17 @@ add_executable(pixelbot
     src/vision/detector_factory.cpp
     src/aim/aim_controller.cpp
     src/input/uinput_mouse.cpp
+    src/input/keybind_poller.cpp
+    src/gui/gui.cpp
     src/pipeline.cpp)
 
 target_include_directories(pixelbot PRIVATE src)
 target_link_libraries(pixelbot PRIVATE
     nlohmann_json::nlohmann_json
     PkgConfig::X11
+    PkgConfig::SDL2
+    imgui
     ${STDCXX_EXP})
-target_compile_definitions(pixelbot PRIVATE
-    $<$<CONFIG:Release>:NDEBUG>)
 
 # --- Self-test (in-process synthetic frames, no X11/uinput needed) ------------
 add_executable(pixelbot-selftest

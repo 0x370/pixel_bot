@@ -8,6 +8,7 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include "input/keybind_poller.hpp"
 #include <cstddef>
 
 namespace pixelbot {
@@ -44,6 +45,8 @@ private:
     std::unique_ptr<CaptureBackend> capture_;
     std::unique_ptr<Detector> detector_;
     std::unique_ptr<MouseInput> mouse_;
+    std::unique_ptr<KeybindPoller> keybind_;
+    KeybindConfig last_keybind_;
     bool dry_run_;
     std::atomic<std::shared_ptr<FrameSnap>> latest_;
     std::jthread capture_thread_, aim_thread_;

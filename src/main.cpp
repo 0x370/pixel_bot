@@ -1,12 +1,14 @@
-// src/main.cpp — entry point: parse args, wire backends, run pipeline.
+// src/main.cpp — entry point: parse args, wire backends, run pipeline + GUI.
 //
-// Usage: pixelbot [--config <path>] [--dry-run] [--once]
+// Usage: pixelbot [--config <path>] [--dry-run] [--once] [--no-gui]
 //   --config <path>  config file (default ./config.json)
 //   --dry-run        no mouse input; log target+delta to stderr each frame
 //   --once           capture one frame, print "w h stride" + center BGRA, exit
+//   --no-gui         run headless (no control panel; block until signal)
 //
-// Errors are always fatal (FatalError → stacktrace + exit). SIGINT/SIGTERM
-// release the shutdown semaphore for graceful join; SIGHUP reloads config.
+// Errors are always fatal (FatalError -> stacktrace + exit). SIGINT/SIGTERM
+// release the shutdown semaphore for graceful join (headless mode); SIGHUP
+// reloads config. With the GUI, closing the window is the normal exit.
 #include "error.hpp"
 #include "config.hpp"
 #include "core/capture.hpp"
@@ -14,6 +16,7 @@
 #include "core/mouse.hpp"
 #include "capture/x11_capture.hpp"
 #include "input/uinput_mouse.hpp"
+#include "gui/gui.hpp"
 #include "pipeline.hpp"
 #include "aim/aim_controller.hpp"
 #include <print>
@@ -44,7 +47,6 @@ static std::unique_ptr<MouseInput> make_mouse(const Config& cfg, bool dry_run) {
 static int run_once(CaptureBackend& cap) {
     cap.start();
     Frame f = cap.capture();
-    // Center pixel BGRA.
     const int cx = f.width / 2, cy = f.height / 2;
     const auto* px = reinterpret_cast<const unsigned char*>(f.data.data())
                      + static_cast<std::ptrdiff_t>(cy) * f.stride + cx * 4;
@@ -60,8 +62,9 @@ int main(int argc, char** argv) {
     std::string config_path = "./config.json";
     bool dry_run = false;
     bool once = false;
+    bool no_gui = false;
 
-    // Parse argv: --config <path>, --dry-run, --once.
+    // Parse argv.
     for (int i = 1; i < argc; ++i) {
         std::string_view a = argv[i];
         if (a == "--config" && i + 1 < argc) {
@@ -70,9 +73,12 @@ int main(int argc, char** argv) {
             dry_run = true;
         } else if (a == "--once") {
             once = true;
+        } else if (a == "--no-gui") {
+            no_gui = true;
         } else {
             std::println(stderr, "pixelbot: unknown arg '{}'", a);
-            std::println(stderr, "usage: pixelbot [--config <path>] [--dry-run] [--once]");
+            std::println(stderr,
+                "usage: pixelbot [--config <path>] [--dry-run] [--once] [--no-gui]");
             return 1;
         }
     }
@@ -91,7 +97,17 @@ int main(int argc, char** argv) {
     Pipeline pl(std::move(capture), std::move(detector), std::move(mouse), dry_run);
     pl.start();
 
-    // Block until SIGINT/SIGTERM releases the semaphore (graceful shutdown).
+    // GUI mode: run the control panel on the main thread (SDL requires this).
+    // The pipeline's capture/aim threads run in the background. Closing the
+    // window is the normal exit; SIGINT/SIGTERM tear down via _exit(1).
+    if (!no_gui) {
+        Gui gui;
+        while (gui.tick()) { /* pump events + render until window closes */ }
+        pl.stop();
+        return 0;
+    }
+
+    // Headless: block until SIGINT/SIGTERM releases the semaphore.
     std::binary_semaphore sem{0};
     set_shutdown_semaphore(&sem);
     sem.acquire();

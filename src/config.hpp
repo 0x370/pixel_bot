@@ -42,10 +42,20 @@ struct CaptureConfig {
     int region_x = 0, region_y = 0, region_w = 0, region_h = 0;
 };
 
+// Per-profile keybind for enabling aiming. `aim_key` is an X11 keysym name
+// (e.g. "F1", "space", "Caps_Lock") or "Mouse1".."Mouse5". Empty = aim always
+// enabled (no keybind). `aim_mode`: "hold" (aim while key down) or "toggle"
+// (press to flip on/off).
+struct KeybindConfig {
+    std::string aim_key;
+    std::string aim_mode = "hold";
+};
+
 struct Profile {
     CaptureConfig capture;
     DetectionConfig detection;
     AimConfig aim;
+    KeybindConfig keybind;
 };
 
 struct Config {
@@ -83,6 +93,9 @@ public:
     bool reload_if_requested();
     // Lock-free snapshot of the current config.
     [[nodiscard]] std::shared_ptr<const Config> snapshot() const noexcept;
+    // Atomically publish a new config (used by the GUI to push live edits).
+    // The aim loop picks it up on the next snapshot read.
+    void publish(std::shared_ptr<const Config> cfg) noexcept;
     // Mark reload requested (called from the SIGHUP handler).
     static void request_reload() noexcept;
     // Install the SIGHUP handler that sets the reload flag.

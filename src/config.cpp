@@ -176,6 +176,28 @@ static AimConfig parse_aim(const json& j, const std::string& path) {
     return a;
 }
 
+static KeybindConfig parse_keybind(const json& j, const std::string& path) {
+    KeybindConfig k;
+    if (!j.contains("keybind")) return k;  // optional; defaults = always aim
+    const auto& kb = j.at("keybind");
+    if (!kb.is_object())
+        throw FatalError{"config: " + path + ".keybind: must be an object"};
+    // aim_key optional (default empty = always aim).
+    if (kb.contains("aim_key")) {
+        if (!kb.at("aim_key").is_string())
+            throw FatalError{"config: " + path + ".keybind.aim_key: must be a string"};
+        k.aim_key = kb.at("aim_key").get<std::string>();
+    }
+    if (kb.contains("aim_mode")) {
+        if (!kb.at("aim_mode").is_string())
+            throw FatalError{"config: " + path + ".keybind.aim_mode: must be a string"};
+        k.aim_mode = kb.at("aim_mode").get<std::string>();
+        if (k.aim_mode != "hold" && k.aim_mode != "toggle")
+            throw FatalError{"config: " + path + ".keybind.aim_mode: must be 'hold' or 'toggle'"};
+    }
+    return k;
+}
+
 static Profile parse_profile(const json& j, const std::string& path) {
     Profile p;
     if (!j.contains("capture")) throw FatalError{"config: " + path + ": missing 'capture'"};
@@ -184,6 +206,7 @@ static Profile parse_profile(const json& j, const std::string& path) {
     p.capture = parse_capture(j.at("capture"), path + ".capture");
     p.detection = parse_detection(j.at("detection"), path + ".detection");
     p.aim = parse_aim(j.at("aim"), path + ".aim");
+    p.keybind = parse_keybind(j, path);
     return p;
 }
 
@@ -231,6 +254,10 @@ void ConfigStore::reload() {
         throw FatalError{"config: reload called before load"};
     auto cfg = parse_config(read_file(path_), path_);
     cfg_.store(std::move(cfg), std::memory_order_release);
+}
+
+void ConfigStore::publish(std::shared_ptr<const Config> cfg) noexcept {
+    if (cfg) cfg_.store(std::move(cfg), std::memory_order_release);
 }
 
 } // namespace pixelbot
