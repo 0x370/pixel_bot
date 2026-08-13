@@ -1,4 +1,4 @@
-# pixelbot
+# PixelBot: C++23 Linux Color & Edge Aim-Assist for FPS Games
 
 A C++23 color/edge aim-assist bot for FPS games on X11 Linux. It captures the
 screen, detects a target silhouette by color and/or edge shape, and moves the
