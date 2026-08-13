@@ -35,26 +35,6 @@ components, and the GUI is Dear ImGui on SDL2.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    subgraph Capture thread
-        A[X11 SHM capture] --> B[copy into FrameSnap]
-    end
-    B -->|atomic shared_ptr, latest wins| C[aim thread]
-    subgraph Aim thread ~1 kHz
-        C --> D[detect target]
-        D --> E[center-relative delta]
-        E --> F[EMA smoothing]
-        F --> G{aim enabled?}
-        G -->|yes| H[uinput mouse move]
-        G -->|no| C
-    end
-    I[KeybindPoller] --> G
-    J[ConfigStore snapshot] --> D
-    J --> F
-    J --> G
-```
-
 Two threads exchange one `shared_ptr<FrameSnap>` atomically: the capture
 thread always overwrites (latest-wins, frames drop rather than queue), the aim
 thread reads a snapshot and runs detect → translate → smooth → move, paced at
